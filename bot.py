@@ -43,6 +43,9 @@ except Exception as e:
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
+# ▶ 추가: 시작 시 명령어 초기화 여부 ( .env에 RESET_COMMANDS_ON_START=1 로 켜기 )
+RESET_COMMANDS_ON_START = os.getenv("RESET_COMMANDS_ON_START", "0") in ("1", "true", "True")
+
 INTENTS = discord.Intents.default()
 INTENTS.message_content = True  # /청소 등 로그/메시지 확인 시 필요
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
@@ -119,7 +122,7 @@ class GuildPlayer:
         before = FFMPEG_BEFORE
         if getattr(track, "_http_headers", None):
             header_lines = "".join(f"{k}: {v}\r\n" for k, v in track._http_headers.items())
-        # 따옴표로 감싸서 한 옵션으로 전달 (Windows 고려)
+            # 따옴표로 감싸서 한 옵션으로 전달 (Windows 고려)
             before = f'{before} -headers "{header_lines}"'
         if track.start_offset and track.start_offset > 0:
             before = f"-ss {track.start_offset} {before}"
@@ -292,10 +295,41 @@ def parse_timestamp(ts: str) -> float:
 
 
 # =========================
+# (추가) 명령어 초기화 유틸
+# =========================
+async def wipe_all_app_commands():
+    """
+    전역/길드에 등록된 모든 애플리케이션 명령어를 비움.
+    이후 tree.sync()로 현재 코드의 명령어만 다시 등록.
+    """
+    try:
+        app_id = bot.application_id  # 동일: (await bot.application_info()).id
+        # 전역 명령어 전체 제거
+        await bot.http.bulk_upsert_global_commands(app_id, [])
+        # 봇이 들어가 있는 모든 길드에서 제거
+        for g in bot.guilds:
+            try:
+                await bot.http.bulk_upsert_guild_commands(app_id, g.id, [])
+            except Exception as ge:
+                print(f"[경고] 길드({g.id}) 명령어 초기화 실패:", ge)
+        print("✅ 모든 전역/길드 Slash 명령어 초기화 완료")
+    except Exception as e:
+        print("명령어 초기화 중 오류:", e)
+
+
+# =========================
 # 이벤트
 # =========================
 @bot.event
 async def on_ready():
+    # ▶ 추가: 시작 시 명령어 초기화
+    if RESET_COMMANDS_ON_START:
+        # 길드 캐시가 찰 시간을 조금 줌
+        await asyncio.sleep(1.0)
+        await wipe_all_app_commands()
+        # API 반영 대기 (짧은 지연이 안정적)
+        await asyncio.sleep(1.0)
+
     try:
         synced = await bot.tree.sync()
         print(f"Slash commands synced: {len(synced)}")
